@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Public MCP server for 掌心窗: screenshot, guard tools, configurable app control, active care, visits, and wallet approvals.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
@@ -16,3 +17,4 @@
     "zod": "^3.23.8"
   }
 }
+

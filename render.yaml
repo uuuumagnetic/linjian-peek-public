@@ -2,7 +2,7 @@
 # 一键部署会创建两个服务：手机端后端 server + MCP 服务。
 # 部署后：
 # - 手机 App 填 zhangxinchuang-server 的外部地址。
-# - AI/MCP 客户端填 zhangxinchuang-mcp 的 /mcp 或 /sse 地址。
+# - AI/MCP 客户端填 /private/<MCP_PRIVATE_KEY>/mcp 或 /private/<MCP_PRIVATE_KEY>/sse。
 #
 # v0.3.6.6 修正：MCP 的 LINJIAN_URL 不再使用 Render 内网 hostport，
 # 而是自动引用 server 服务的公网 RENDER_EXTERNAL_URL。
@@ -40,6 +40,10 @@ services:
     buildCommand: npm install
     startCommand: npm start
     envVars:
+      # 独立随机密钥：openssl rand -hex 32；不可与 LINJIAN_TOKEN 相同。
+      # 部署前手动配置；未配置时 MCP 拒绝启动。
+      - key: MCP_PRIVATE_KEY
+        sync: false
       - fromGroup: zhangxinchuang-public-shared
       # 自动取 server 的公网 HTTPS 地址，例如 https://zhangxinchuang-server-xxxx.onrender.com
       # 不再取 property: hostport，避免部分环境下 MCP 访问 Render 内网地址 fetch failed。
@@ -48,3 +52,4 @@ services:
           type: web
           name: zhangxinchuang-server
           envVarKey: RENDER_EXTERNAL_URL
+
