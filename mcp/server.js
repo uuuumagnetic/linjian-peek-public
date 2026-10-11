@@ -51,6 +51,17 @@ function effectiveLinjianUrl() {
 const LINJIAN_TOKEN = process.env.LINJIAN_TOKEN || "";
 const DEFAULT_DEVICE = process.env.LINJIAN_DEFAULT_DEVICE || "android-phone";
 
+// This is a PRIVATE CAPABILITY URL, not OAuth. Never disclose the full URL.
+// Require a separate, randomly generated 256-bit key before any MCP route exists.
+const MCP_PRIVATE_KEY = String(process.env.MCP_PRIVATE_KEY || "").trim();
+if (!/^[A-Za-z0-9_-]{48,128}$/.test(MCP_PRIVATE_KEY)) {
+  throw new Error("MCP_PRIVATE_KEY must be 48-128 URL-safe characters (use: openssl rand -hex 32)");
+}
+if (MCP_PRIVATE_KEY === LINJIAN_TOKEN.trim()) {
+  throw new Error("MCP_PRIVATE_KEY must be different from LINJIAN_TOKEN");
+}
+const PRIVATE_MCP_PREFIX = `/private/${MCP_PRIVATE_KEY}`;
+
 // v0.3.6.6：公开 MCP 经常被平台限制在 20 秒内返回。
 // 状态读取、活动记录和命令轮询都要快速失败，避免整条工具链被 Render 冷启动、网络抖动或手机端确认弹窗拖到超时。
 const DEFAULT_FETCH_TIMEOUT_MS = Number(process.env.LINJIAN_FETCH_TIMEOUT_MS || 8000);
@@ -2176,6 +2187,8 @@ function makeServer() {
 }
 
 const app = express();
+// Capability keys are case-sensitive, unlike Express routes by default.
+app.set("case sensitive routing", true);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin || "*";
@@ -2207,16 +2220,14 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "32mb" }));
-app.get("/", (_req, res) => res.type("text/plain").send("掌心窗 unified MCP is running. Use /mcp for Streamable HTTP, or /sse for SSE."));
+app.get("/", (_req, res) => res.type("text/plain").send("掌心窗 MCP is running. MCP endpoints require a private URL."));
 app.get("/health", (_req, res) => res.json({
   ok: true,
   service: "linjian-public-mcp",
   version: "0.3.9.0",
   has_url: Boolean(LINJIAN_URL_CANDIDATES.length),
   has_token: Boolean(LINJIAN_TOKEN),
-  configured_linjian_url: RAW_LINJIAN_URL || "",
-  effective_linjian_url: effectiveLinjianUrl(),
-  fallback_linjian_urls: LINJIAN_URL_CANDIDATES.filter((u) => u !== RAW_LINJIAN_URL),
+  // Do not disclose backend hostnames on the unauthenticated health endpoint.
   guardian_day_tools: true,
   diary_tools: true,
   diary_rename_fix: true,
@@ -2226,13 +2237,13 @@ app.get("/health", (_req, res) => res.json({
   diary_annotation_ui: "margin_notes",
   focus_tools: true,
   focus_tool_names: ["get_focus_status", "start_focus_mode", "end_focus_mode", "set_focus_plan", "reply_focus_request", "approve_focus_unlock", "deny_focus_unlock"],
-  mcp_wallet_endpoint: "/mcp-wallet",
+  mcp_wallet_endpoint: "/private/<MCP_PRIVATE_KEY>/mcp-wallet",
   schema_exposure_fix: true,
   focus_schema_exposure_fix: true,
   priority_tool: "wallet_takeout_action",
   wallet_takeout_tool_count: WALLET_TAKEOUT_ACTIONS.size,
   wallet_takeout_tools: Array.from(WALLET_TAKEOUT_ACTIONS),
-  stability_note: "v0.3.9.0 同步公开版版本信息；普通 /mcp 提前注册统一入口，新增 /mcp-wallet 专用端点，并把专注模式工具前置注册，兼容部分客户端不暴露新增工具的问题。"
+  stability_note: "MCP endpoints require a private capability URL; legacy public endpoints are disabled."
 }));
 
 // Some third-party MCP clients send non-standard experimental capability flags during
@@ -2256,7 +2267,7 @@ function sanitizeMcpRequestBody(body) {
   return sanitizeMcpInitializeMessage(body);
 }
 
-app.post("/mcp", async (req, res) => {
+app.post(`${PRIVATE_MCP_PREFIX}/mcp`, async (req, res) => {
   try {
     const server = makeServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -2269,8 +2280,8 @@ app.post("/mcp", async (req, res) => {
     if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: String(err?.message || err) }, id: null });
   }
 });
-app.get("/mcp", (_req, res) => res.status(405).json({ ok: false, error: "Use POST /mcp for Streamable HTTP MCP." }));
-app.post("/mcp-wallet", async (req, res) => {
+app.get(`${PRIVATE_MCP_PREFIX}/mcp`, (_req, res) => res.status(405).json({ ok: false, error: "Use POST to this private endpoint for Streamable HTTP MCP." }));
+app.post(`${PRIVATE_MCP_PREFIX}/mcp-wallet`, async (req, res) => {
   try {
     const server = makeWalletTakeoutServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -2283,15 +2294,16 @@ app.post("/mcp-wallet", async (req, res) => {
     if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: String(err?.message || err) }, id: null });
   }
 });
-app.get("/mcp-wallet", (_req, res) => res.status(405).json({ ok: false, error: "Use POST /mcp-wallet for wallet/takeout Streamable HTTP MCP.", endpoint: "/mcp-wallet" }));
+app.get(`${PRIVATE_MCP_PREFIX}/mcp-wallet`, (_req, res) => res.status(405).json({ ok: false, error: "Use POST to this private endpoint for wallet/takeout Streamable HTTP MCP." }));
 const sseTransports = new Map();
-app.get("/sse", async (_req, res) => {
-  try { const transport = new SSEServerTransport("/messages", res); sseTransports.set(transport.sessionId, transport); res.on("close", () => { sseTransports.delete(transport.sessionId); transport.close(); }); await makeServer().connect(transport); }
+app.get(`${PRIVATE_MCP_PREFIX}/sse`, async (_req, res) => {
+  try { const transport = new SSEServerTransport(`${PRIVATE_MCP_PREFIX}/messages`, res); sseTransports.set(transport.sessionId, transport); res.on("close", () => { sseTransports.delete(transport.sessionId); transport.close(); }); await makeServer().connect(transport); }
   catch (err) { console.error(err); if (!res.headersSent) res.status(500).end(String(err?.message || err)); }
 });
-app.post("/messages", async (req, res) => { const sessionId = req.query.sessionId; const transport = sseTransports.get(sessionId); if (!transport) return res.status(404).send("No SSE transport for sessionId"); await transport.handlePostMessage(req, res, req.body); });
+app.post(`${PRIVATE_MCP_PREFIX}/messages`, async (req, res) => { const sessionId = req.query.sessionId; const transport = sseTransports.get(sessionId); if (!transport) return res.status(404).send("No SSE transport for sessionId"); await transport.handlePostMessage(req, res, req.body); });
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`掌心窗 unified MCP listening on 0.0.0.0:${PORT}`);
   console.log(`LINJIAN_URL=${RAW_LINJIAN_URL || "<missing>"}`);
   if (LINJIAN_URL_CANDIDATES.length > 1) console.log(`LINJIAN_URL fallback candidates=${LINJIAN_URL_CANDIDATES.join(", ")}`);
 });
+
