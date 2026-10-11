@@ -10,7 +10,7 @@
 - `mark_diary_annotations_seen`：读完后标记已看。
 - `delete_diary_annotation`：删除指定纸条，需确认。
 
-掌心窗 MCP 服务把手机端能力暴露给支持 MCP 的客户端。所有工具都需要你自己的 `LINJIAN_TOKEN`，并且手机端需要保持服务启动。公开版工具只保留通用能力，不包含私人绑定接口、私人 Token、私人服务地址或固定私人关系。
+掌心窗 MCP 服务把手机端能力暴露给支持 MCP 的客户端。MCP 服务使用 `LINJIAN_TOKEN` 访问手机后端；客户端通过包含独立 `MCP_PRIVATE_KEY` 的私有 URL 连接 MCP，手机端需要保持服务启动。公开版工具只保留通用能力，不包含私人绑定接口、私人 Token、私人服务地址或固定私人关系。
 
 ## 连接方式
 
@@ -19,15 +19,15 @@ MCP 服务默认监听 `PORT` 环境变量，未设置时使用 `8787`。
 常用地址：
 
 ```text
-http://127.0.0.1:8787/mcp
-http://127.0.0.1:8787/sse
+http://127.0.0.1:8787/private/<MCP_PRIVATE_KEY>/mcp
+http://127.0.0.1:8787/private/<MCP_PRIVATE_KEY>/sse
 ```
 
 公网部署后将域名替换为自己的 MCP 服务域名，例如：
 
 ```text
-https://你的-mcp-域名/mcp
-https://你的-mcp-域名/sse
+https://你的-mcp-域名/private/<MCP_PRIVATE_KEY>/mcp
+https://你的-mcp-域名/private/<MCP_PRIVATE_KEY>/sse
 ```
 
 必需环境变量：
@@ -35,8 +35,15 @@ https://你的-mcp-域名/sse
 ```env
 LINJIAN_URL=https://你的-server-域名
 LINJIAN_TOKEN=你的长随机token
+MCP_PRIVATE_KEY=替换为独立随机密钥
 LINJIAN_DEFAULT_DEVICE=android-phone
 ```
+
+使用 `openssl rand -hex 32` 在本机生成独立密钥，只粘贴到 MCP 服务的环境变量中。密钥必须为 48–128 位 URL 安全字符（字母、数字、`_`、`-`），区分大小写，不能与 `LINJIAN_TOKEN` 相同；未配置或无效时服务拒绝启动。先配置密钥，再合并和部署。Render Blueprint 中的 `MCP_PRIVATE_KEY` 需手动填写；已有服务也需先设置该变量。
+
+这是 **capability URL（持有链接即可访问）**，不是 OAuth。客户端可选择“无需身份验证”，但完整 URL 本身就是凭据，不能公开到截图、聊天或日志中。反向代理和云服务访问日志可能记录路径，应限制日志访问；泄露后须更换密钥并更新客户端地址。不要把真实密钥写进仓库。
+
+旧的 `/mcp`、`/mcp-wallet`、`/sse`、`/messages` 均不再注册。`/health` 仍公开，但不返回后端地址或密钥；SSE 的消息地址也使用同一私有前缀。此变更只保护 Node MCP 层，不改变手机后端或 Cloudflare Worker 的认证机制，部署前须单独确认后端 `/api/*` 仍验证 `LINJIAN_TOKEN`。
 
 Render 一键部署时，`LINJIAN_URL` 会由 Blueprint 自动引用 server 的公网 `RENDER_EXTERNAL_URL`；旧版部署只重新部署 MCP 时，新版代码也会把旧内网 `hostport` 自动兜底为公网地址。手动部署或 Railway 部署时再按上面格式填写。
 
@@ -219,8 +226,8 @@ Render 一键部署时，`LINJIAN_URL` 会由 Blueprint 自动引用 server 的�
 
 本版提供两个兜底方案：
 
-- `wallet_takeout_action`：普通 `/mcp` 中靠前暴露的统一入口。参数 `action` 填具体工具名，`payload_json` 填对应参数 JSON。
-- `/mcp-wallet`：小金库/外卖助手专用端点。连接地址示例：`https://你的-mcp-域名/mcp-wallet`。
+- `wallet_takeout_action`：普通私有 `/private/<MCP_PRIVATE_KEY>/mcp` 中靠前暴露的统一入口。参数 `action` 填具体工具名，`payload_json` 填对应参数 JSON。
+- `/private/<MCP_PRIVATE_KEY>/mcp-wallet`：小金库/外卖助手专用端点。连接地址示例：`https://你的-mcp-域名/private/<MCP_PRIVATE_KEY>/mcp-wallet`。
 
 常用 action 示例：`submit_companion_wallet_request`、`list_companion_wallet_requests`、`save_user_wallet_request_result`、`get_takeout_state`、`prepare_takeout_checkout`。
 
@@ -230,3 +237,4 @@ Render 一键部署时，`LINJIAN_URL` 会由 Blueprint 自动引用 server 的�
 专注模式必须在 MCP 工具列表中暴露：`get_focus_status`、`start_focus_mode`、`end_focus_mode`、`set_focus_plan`、`reply_focus_request`、`approve_focus_unlock`、`deny_focus_unlock`。用户说“帮我专注/锁手机/开专注模式/别让我玩手机”时优先调用 `start_focus_mode`；锁单个 App 才使用应用门禁。
 
 `rename_diary_book` 已支持缺少 `book_id` 时自动处理：传 `old_name + new_name` 可按名字匹配；如果手机端只有一本日记本，只传 `new_name` 也会自动重命名。用户要求改名时不要反复调用 `list_diary_books`。
+
