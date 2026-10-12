@@ -1114,6 +1114,7 @@ public class MainActivity extends Activity {
         root.addView(guardSettingBlock("应用门禁", "需要时轻轻守住", R.drawable.ic_shield, drawerAppGate), marginBottom(7));
         root.addView(actionSettingBlock("专注模式", "全机专注、应急放行与留言", R.drawable.ic_shield, this::showFocusModePanel), marginBottom(7));
         root.addView(actionSettingBlock("学习计时", "独立计时、暂停与每日累计；同步给哥哥", R.drawable.ic_clock, this::showStudyTimerPanel), marginBottom(7));
+        root.addView(actionSettingBlock("双人学习室", "学习计时、给哥哥留言与可选免费AI回复", R.drawable.ic_heart_wave, () -> startActivity(new Intent(this, StudyRoomActivity.class))), marginBottom(7));
         root.addView(actionSettingBlock("小金库", "预算、记账与花钱审批", R.drawable.ic_wallet, () -> startActivity(new Intent(this, WalletActivity.class))), marginBottom(7));
         root.addView(actionSettingBlock("今天吃什么", "常点外卖、预算与小金库联动", R.drawable.ic_wallet, () -> startActivity(new Intent(this, TakeoutActivity.class))), marginBottom(7));
         root.addView(guardSettingBlock("主动提醒", "电量、休息与喝水", R.drawable.ic_clock, drawerReminder), marginBottom(7));

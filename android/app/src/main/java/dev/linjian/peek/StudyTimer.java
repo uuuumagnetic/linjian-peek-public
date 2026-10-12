@@ -28,6 +28,7 @@ public final class StudyTimer {
             s.put("segment_started_at_ms", 0L);
             s.put("accumulated_ms", 0L);
             s.put("daily_totals_ms", new JSONObject());
+            s.put("subject_daily_totals_ms", new JSONObject());
             s.put("history", new JSONArray());
         } catch (Exception ignored) { }
         return s;
@@ -39,6 +40,7 @@ public final class StudyTimer {
             if (raw != null && !raw.isEmpty()) {
                 JSONObject s = new JSONObject(raw);
                 if (!s.has("daily_totals_ms")) s.put("daily_totals_ms", new JSONObject());
+                if (!s.has("subject_daily_totals_ms")) s.put("subject_daily_totals_ms", new JSONObject());
                 if (!s.has("history")) s.put("history", new JSONArray());
                 return s;
             }
@@ -75,7 +77,7 @@ public final class StudyTimer {
     }
 
     private static long duration(long start, long end) {
-        return Math.max(0L, end - start);
+        return start <= 0L ? 0L : Math.min(7L * 24 * 60 * 60 * 1000, Math.max(0L, end - start));
     }
 
     // 当前这一段只在暂停或结束时入账；读取快照时动态计算但不重复累积。
@@ -87,6 +89,11 @@ public final class StudyTimer {
         if (ms > 0L) {
             s.put("accumulated_ms", s.optLong("accumulated_ms", 0L) + ms);
             creditDays(s.optJSONObject("daily_totals_ms"), start, start + ms);
+            JSONObject subjects = s.getJSONObject("subject_daily_totals_ms");
+            String subject = s.optString("subject", "未分类");
+            JSONObject days = subjects.optJSONObject(subject);
+            if (days == null) { days = new JSONObject(); subjects.put(subject, days); }
+            creditDays(days, start, start + ms);
         }
         s.put("segment_started_at_ms", 0L);
     }
@@ -114,6 +121,19 @@ public final class StudyTimer {
             out.put("elapsed_ms", s.optLong("accumulated_ms", 0L) + runningMs);
             out.put("today_date", today);
             out.put("today_ms", (totals == null ? 0L : totals.optLong(today, 0L)) + currentDay.optLong(today, 0L));
+            JSONObject bySubject = new JSONObject();
+            JSONObject subjects = s.optJSONObject("subject_daily_totals_ms");
+            java.util.Iterator<String> keys = subjects.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                JSONObject days = subjects.optJSONObject(key);
+                if (days != null && days.optLong(today, 0L) > 0L) bySubject.put(key, days.optLong(today));
+            }
+            if (currentDay.optLong(today) > 0L) {
+                String key = s.optString("subject", "未分类");
+                bySubject.put(key, bySubject.optLong(key) + currentDay.optLong(today));
+            }
+            out.put("today_subjects_ms", bySubject);
             out.put("today_completed_ms", totals == null ? 0L : totals.optLong(today, 0L));
             out.put("today_sessions", todaySessions(s, today));
             out.put("last_session", s.optJSONObject("last_session") == null ? JSONObject.NULL : s.optJSONObject("last_session"));

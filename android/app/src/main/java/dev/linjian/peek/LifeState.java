@@ -97,6 +97,7 @@ public class LifeState {
             state.put("app_gate", AppGate.config(ctx));
             state.put("focus_mode", FocusMode.config(ctx));
             state.put("study_timer", StudyTimer.snapshot(ctx));
+            state.put("study_room", StudyRoomChat.snapshot(ctx));
             state.put("cycle_state", CycleState.collect(ctx));
             state.put("calendar_state", CalendarState.collect(ctx));
             state.put("wallet_state", WalletState.collect(ctx));
