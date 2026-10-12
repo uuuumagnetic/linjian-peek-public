@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import calendar
+import re
 import json
 import os
 import subprocess
@@ -526,6 +527,63 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/mcp", "/sse"):
             self._json(400, {"ok": False, "error": "LINJIAN_ERR_WRONG_SERVICE", "message": "你访问的是掌心窗 server 服务，不是 MCP 服务。请单独部署 mcp 目录，并在 MCP 客户端填写 MCP 服务域名 + /mcp 或 /sse。"})
+            return
+        if path == "/api/study_room/reply":
+            # Header only: avoid credentials in query strings and access logs.
+            import hmac
+            supplied = self.headers.get("X-Auth-Token", "")
+            if not self.state.token or not hmac.compare_digest(supplied.encode(), self.state.token.encode()):
+                self._json(403, {"ok": False, "error": ERR_BAD_TOKEN}); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 32768:
+                    self._json(413, {"ok": False, "error": "request_too_large"}); return
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(data, dict): raise ValueError()
+            except (ValueError, UnicodeError):
+                self._json(400, {"ok": False, "error": "invalid_messages"}); return
+            messages = data.get("messages") or []
+            device = data.get("device_id", DEFAULT_DEVICE)
+            if not isinstance(device, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", device):
+                self._json(400, {"ok": False, "error": "bad_device"}); return
+            if (not isinstance(messages, list) or not 1 <= len(messages) <= 8
+                or any(not isinstance(m, dict) or m.get("role") not in ("user", "assistant")
+                       or not isinstance(m.get("content"), str) or not m["content"].strip()
+                       or len(m["content"].encode("utf-16-le")) // 2 > 1000 for m in messages)
+                or messages[-1].get("role") != "user"):
+                self._json(400, {"ok": False, "error": "invalid_messages"}); return
+            upstream = os.environ.get("STUDY_ROOM_FREE_AI_URL", "").strip()
+            upstream_token = os.environ.get("STUDY_ROOM_FREE_AI_TOKEN", "").strip()
+            configured = urlparse(upstream)
+            if (os.environ.get("STUDY_ROOM_FREE_AI_ENABLED") != "true"
+                or configured.scheme != "https" or not configured.hostname or configured.username
+                or configured.password or configured.query or configured.fragment or not upstream_token):
+                self._json(503, {"ok": False, "error": "free_ai_not_configured"}); return
+            try:
+                from urllib.request import Request, build_opener, HTTPRedirectHandler
+                from urllib.error import HTTPError
+                class NoRedirect(HTTPRedirectHandler):
+                    def redirect_request(self, req, fp, code, msg, headers, newurl):
+                        return None
+                payload = json.dumps({"device_id": device,
+                    "subject": str(data.get("subject") or "学习")[:60],
+                    "messages": [{"role": m["role"], "content": m["content"]} for m in messages]}, ensure_ascii=False).encode("utf-8")
+                req = Request(upstream, data=payload, headers={"X-Auth-Token": upstream_token,
+                    "Content-Type": "application/json; charset=utf-8"}, method="POST")
+                with build_opener(NoRedirect()).open(req, timeout=20) as response:
+                    raw = response.read(16385)
+                    if len(raw) > 16384: raise ValueError("response_too_large")
+                    result = json.loads(raw.decode("utf-8"))
+                if isinstance(result, dict) and result.get("ok") is True and isinstance(result.get("reply"), str) and result["reply"].strip():
+                    self._json(200, {"ok": True, "reply": result["reply"].strip()[:600],
+                                     "provider": "free_ai_proxy", "same_chatgpt_conversation": False})
+                else: self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
+            except HTTPError as error:
+                if error.code == 429:
+                    self._json(429, {"ok": False, "error": "free_ai_daily_limit"})
+                else: self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
+            except Exception:
+                self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
             return
         if path == "/api/companion/whisper":
             if not self._require_token(): return
