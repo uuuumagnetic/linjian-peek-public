@@ -174,6 +174,7 @@ const COMPANION_ACTION_META = {
   get_senses_state: ["观察", "查看通用状态", "确认生活状态与归电节奏"],
   get_screen_break_state: ["观察", "查看应用门禁状态", "确认应用门禁与休息状态"],
   get_lock_state: ["观察", "查看应用门禁状态", "确认应用门禁与休息状态"],
+  get_study_room_messages: ["观察", "查看双人学习室", "同步学习室最近留言；不自动代表已经回复"],
   get_study_timer_status: ["观察", "查看学习计时", "同步学习计时进度"],
   start_study_timer: ["学习", "开始学习计时", "按科目记录学习时间"],
   pause_study_timer: ["学习", "暂停学习计时", "暂时暂停学习记录"],
@@ -1055,7 +1056,7 @@ function makeServer() {
     "temporary_screen_break_release", "end_screen_break", "extend_screen_break", "deny_screen_break_release_request",
     "get_screen_break_state", "get_lock_state", "lock_app", "unlock_app", "temporary_unlock_app", "extend_lock", "deny_unlock_request",
     "list_screen_break_apps", "list_lockable_apps", "add_screen_break_app", "add_locked_app", "remove_locked_app", "set_screen_break_passphrase", "set_emergency_passphrase",
-    "get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer",
+    "get_study_room_messages", "get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer",
     "get_focus_status", "start_focus_mode", "end_focus_mode", "set_focus_plan", "reply_focus_request", "approve_focus_unlock", "deny_focus_unlock", "request_focus_unlock", "create_focus_request",
     "get_wallet_month_state", "add_wallet_record", "list_wallet_pending", "submit_wallet_approval", "submit_companion_wallet_request", "list_companion_wallet_requests", "list_wallet_request_results", "confirm_wallet_record",
     "decide_wallet_approval", "save_wallet_request_result", "update_wallet_request_result", "save_user_wallet_request_result", "edit_wallet_record", "delete_wallet_record", "set_wallet_rules", "wallet_approval_request", "get_takeout_state", "set_takeout_budget", "set_takeout_preferences", "add_takeout_card", "save_takeout_card", "update_takeout_card", "remove_takeout_card", "delete_takeout_card", "list_takeout_cards", "list_takeout_meals", "remember_takeout_meal", "remember_current_takeout_meal", "suggest_takeout_options", "create_takeout_plan", "takeout_wallet_request", "open_takeout_link", "open_takeout_plan", "copy_takeout_note", "record_takeout_order", "prepare_takeout_checkout", "auto_takeout_checkout", "get_takeout_checkout_status", "cancel_takeout_checkout"
@@ -1083,6 +1084,18 @@ function makeServer() {
 
 
   // v0.3.8.2：专注模式工具靠前注册，避免部分客户端只读取前若干个 schema 时漏掉接口。
+  server.tool("get_study_room_messages", "只读查看宝宝在掌心窗学习室的最近留言与免费AI回复。和当前ChatGPT对话不是同一条会话，必须显式查看后才能回应。", {
+    device_id: z.string().default(DEFAULT_DEVICE)
+  }, async ({ device_id = DEFAULT_DEVICE }) => {
+    const res = await linjianFetch(`/api/life_state?device_id=${encodeURIComponent(device_id)}`);
+    const data = await res.json();
+    const state = data?.life_state || data?.state || {};
+    return textResult({ ok: Boolean(state?.study_room), study_room: state?.study_room || null,
+      sampled_state_at_ms: state?.updated_at_ms || 0,
+      stale: !state?.updated_at_ms || Date.now() - Number(state.updated_at_ms) > 60000,
+      note: "仅限用户已同步的本机聊天摘要；AI回复不等同当前ChatGPT会话" });
+  });
+
   // 学习计时是独立的、用户手动启动的计时；不能把锁屏时长冒充有效学习时长。
   server.tool("get_study_timer_status", "读取手机同步的学习计时快照：科目、正在计时/暂停、本次时长和今日累计。只读，不启动计时。", {
     device_id: z.string().default(DEFAULT_DEVICE)
@@ -2291,6 +2304,7 @@ app.get("/health", (_req, res) => res.json({
   focus_tool_names: ["get_focus_status", "start_focus_mode", "end_focus_mode", "set_focus_plan", "reply_focus_request", "approve_focus_unlock", "deny_focus_unlock"],
   study_timer_tools: true,
   study_timer_tool_names: ["get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer"],
+  study_room_feature: { messages_synced: true, free_ai_optional: true, same_chatgpt_conversation: false },
   mcp_wallet_endpoint: "/private/<MCP_PRIVATE_KEY>/mcp-wallet",
   schema_exposure_fix: true,
   focus_schema_exposure_fix: true,
