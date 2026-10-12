@@ -86,7 +86,12 @@ test("private MCP routes preserve transports and deny unauthenticated access", {
     assert.match(await res.text(), /"protocolVersion"/);
     const list = await rpc(base, prefix + route, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     assert.equal(list.status, 200);
-    assert.match(await list.text(), /"tools"/);
+    const listed = await list.text();
+    assert.match(listed, /"tools"/);
+    if (route === "/mcp") {
+      for (const name of ["get_study_room_messages", "get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer"])
+        assert.ok(listed.includes('"' + name + '"'), `missing study tool: ${name}`);
+    }
   }
   assert.equal((await rpc(base, prefix + "/messages?sessionId=unknown")).status, 404);
   const abort = new AbortController();
