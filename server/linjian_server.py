@@ -51,6 +51,8 @@ ALLOWED_ACTIONS = {"noop", "peek", "open_app", "home", "back", "recents", "scree
 
 
 
+ALLOWED_ACTIONS.update({"get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer"})
+
 def _nested_url_decode(value: str) -> str:
     s = str(value or "").strip().replace("&amp;", "&")
     for _ in range(4):
