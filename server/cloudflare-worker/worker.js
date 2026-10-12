@@ -71,6 +71,12 @@ async function handle(request, env) {
   if (request.method === "POST") {
     if (path === "/api/peek") return queueCommand(env, { device_id: DEFAULT_DEVICE, action: "peek" });
     if (path === "/api/command") return queueCommand(env, await readJson(request));
+    if (path === "/api/study_room/reply") {
+      // This endpoint accepts header authentication only; never put tokens in URLs.
+      if (!env.LINJIAN_TOKEN || request.headers.get("X-Auth-Token") !== env.LINJIAN_TOKEN)
+        return json({ok:false,error:"LINJIAN_ERR_BAD_TOKEN"},403);
+      return studyRoomRequest(request, env);
+    }
     if (path === "/api/device/state") return saveDeviceState(env, await readJson(request));
     if (path === "/api/device/report") return saveDeviceReport(env, await readJson(request));
     if (path === "/api/takeout/resolve_jd_link") { const body = await readJson(request); return json(await resolveJdShareLink(body.url || body.link || "", body.item_query || body.query || "")); }
@@ -86,6 +92,63 @@ async function handle(request, env) {
   }
 
   return json({ ok: false, error: "LINJIAN_ERR_BAD_METHOD", path }, 404);
+}
+
+async function studyRoomRequest(request, env) {
+  const reader = request.body?.getReader();
+  if (!reader) return json({ok:false,error:"invalid_messages"},400);
+  const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 32768) { await reader.cancel(); return json({ok:false,error:"request_too_large"},413); }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const data = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(bytes));
+    return await studyRoomReply(env, data);
+  } catch (_) { return json({ok:false,error:"invalid_messages"},400); }
+  finally { reader.releaseLock(); }
+}
+
+// Optional free Workers AI binding: absent binding -> explicit unavailable response (not fake chat).
+// Quota is reserved atomically in existing D1 companion_state before each inference.
+async function studyRoomReply(env, data) {
+  if (env.STUDY_ROOM_FREE_AI_ENABLED !== "true" || !env.AI || !env.DB) return json({ ok: false, error: "free_ai_not_configured" }, 503);
+  const device = String(data?.device_id || "android-phone").trim();
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(device)) return json({ok:false,error:"bad_device"},400);
+  const raw = Array.isArray(data?.messages) ? data.messages : [];
+  if (!raw.length || raw.length > 8) return json({ok:false,error:"invalid_messages"},400);
+  if (raw.some(m => !m || typeof m.role !== "string" || typeof m.content !== "string"))
+    return json({ok:false,error:"invalid_messages"},400);
+  const messages = raw.map(m => ({role: m.role, content: m.content.trim()}));
+  if (messages.some(m => !["user", "assistant"].includes(m.role) || !m.content || m.content.length > 1000)
+      || messages.at(-1).role !== "user") return json({ok:false,error:"invalid_messages"},400);
+  const subject = String(data?.subject || "学习").slice(0, 60).replace(/[\r\n]/g, " ");
+  const key = `study_ai_quota:global:${new Date().toISOString().slice(0, 10)}`;
+  try {
+    const quota = await env.DB.prepare(`INSERT INTO companion_state(key,value_json,updated_at)
+      VALUES(?, '1', ?)
+      ON CONFLICT(key) DO UPDATE SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=excluded.updated_at
+      WHERE CAST(value_json AS INTEGER) < 30`).bind(key, new Date().toISOString()).run();
+    if (!quota?.meta?.changes) return json({ok:false,error:"free_ai_daily_limit"},429);
+    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct-fp8", {
+      messages: [
+        {role:"system", content:"你是掌心窗独立的免费学习陪伴AI，昵称Nico。温柔、简短、自然，用中文回应，帮助用户继续学习、保持自主选择，不要用苛责的语气。正在学习的科目：" + subject + "。不要声称自己就是ChatGPT当前会话的助手，不要杜撰真实进度或已完成的操作。每次最多120个汉字。"},
+        ...messages
+      ],
+      max_tokens: 230
+    });
+    const reply = typeof result?.response === "string" ? result.response.trim().slice(0, 600) : "";
+    if (!reply) return json({ok:false,error:"empty_model_response"},503);
+    return json({ok:true,reply,provider:"cloudflare_workers_ai",same_chatgpt_conversation:false});
+  } catch (error) {
+    // Do not return provider errors (which can contain account information) to a phone client.
+    return json({ok:false,error:"free_ai_service_unavailable"},503);
+  }
 }
 
 function tokenOk(request, env, url) {
