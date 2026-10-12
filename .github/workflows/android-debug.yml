@@ -1,8 +1,16 @@
 name: Build Android Debug APK
 
 on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "server/**"
+      - "mcp/**"
+      - "tests/**"
+      - ".github/workflows/android-debug.yml"
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - 'android/**'
       - '.github/workflows/android-debug.yml'
@@ -29,6 +37,22 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Regression tests
+        if: hashFiles('tests/test_study_android.py') != ''
+        run: |
+          npm install --prefix mcp --ignore-scripts
+          npm test --prefix mcp
+          node --test tests/test_study_room_worker.mjs
+          python3 tests/test_study_room_proxy.py
+          python3 tests/test_study_quota_sql.py
+          curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar -o /tmp/study-json.jar
+          JSON_JAR=/tmp/study-json.jar python3 tests/test_study_android.py
+
       - name: Build APK
         run: bash android/build.sh
 
@@ -37,6 +61,7 @@ jobs:
           ls -lh android/*.apk
 
       - name: Upload APK artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: zhangxinchuang-public-debug-apk

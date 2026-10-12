@@ -124,6 +124,15 @@ public class MainActivity extends Activity {
     private long lastCompanionSyncAt = 0L;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
+    private AlertDialog studyTimerDialog;
+    private final Runnable studyTimerTick = new Runnable() {
+        @Override public void run() {
+            if (studyTimerDialog == null || !studyTimerDialog.isShowing() || isFinishing()) return;
+            updateStudyTimerPanel();
+            uiHandler.postDelayed(this, 1000);
+        }
+    };
+
     private final Runnable refreshTick = new Runnable() {
         @Override public void run() { serviceRunning = CompanionService.isRunning(); updateUI(); uiHandler.postDelayed(this, 1500); }
     };
@@ -1113,6 +1122,8 @@ public class MainActivity extends Activity {
         root.addView(label("安心规则", 9), marginBottom(6));
         root.addView(guardSettingBlock("应用门禁", "需要时轻轻守住", R.drawable.ic_shield, drawerAppGate), marginBottom(7));
         root.addView(actionSettingBlock("专注模式", "全机专注、应急放行与留言", R.drawable.ic_shield, this::showFocusModePanel), marginBottom(7));
+        root.addView(actionSettingBlock("学习计时", "独立计时、暂停与每日累计；同步给哥哥", R.drawable.ic_clock, this::showStudyTimerPanel), marginBottom(7));
+        root.addView(actionSettingBlock("双人学习室", "学习计时、给哥哥留言与可选免费AI回复", R.drawable.ic_heart_wave, () -> startActivity(new Intent(this, StudyRoomActivity.class))), marginBottom(7));
         root.addView(actionSettingBlock("小金库", "预算、记账与花钱审批", R.drawable.ic_wallet, () -> startActivity(new Intent(this, WalletActivity.class))), marginBottom(7));
         root.addView(actionSettingBlock("今天吃什么", "常点外卖、预算与小金库联动", R.drawable.ic_wallet, () -> startActivity(new Intent(this, TakeoutActivity.class))), marginBottom(7));
         root.addView(guardSettingBlock("主动提醒", "电量、休息与喝水", R.drawable.ic_clock, drawerReminder), marginBottom(7));
@@ -1139,6 +1150,86 @@ public class MainActivity extends Activity {
         ending.addView(endingCopy, weightedWrap(1f, 10));
         root.addView(ending);
         return root;
+    }
+
+    private void showStudyTimerPanel() {
+        if (studyTimerDialog != null && studyTimerDialog.isShowing()) return;
+        final AlertDialog panel = new AlertDialog.Builder(this)
+                .setTitle("学习计时")
+                .setMessage("")
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("开始学习", null)
+                .setNeutralButton("结束并保存", null)
+                .create();
+        studyTimerDialog = panel;
+        panel.setOnDismissListener(dialog -> {
+            if (studyTimerDialog == panel) {
+                studyTimerDialog = null;
+                uiHandler.removeCallbacks(studyTimerTick);
+            }
+        });
+        panel.show();
+        panel.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            JSONObject current = StudyTimer.snapshot(this);
+            String state = current.optString("status", "idle");
+            if ("idle".equals(state)) {
+                EditText subjectInput = new EditText(this);
+                subjectInput.setSingleLine(true);
+                subjectInput.setText(current.optString("subject", "刑法").isEmpty() ? "刑法" : current.optString("subject"));
+                subjectInput.setSelectAllOnFocus(true);
+                new AlertDialog.Builder(this).setTitle("这次学习什么？").setView(subjectInput)
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("开始计时", (dialog, which) -> {
+                            JSONObject cmd = studyAction("start_study_timer");
+                            try { cmd.put("subject", subjectInput.getText().toString()); } catch (Exception ignored) { }
+                            JSONObject result = StudyTimer.handleCommand(this, cmd);
+                            Toast.makeText(this, result.optBoolean("ok") ? "开始学习计时" : result.optString("result"), Toast.LENGTH_SHORT).show();
+                            updateStudyTimerPanel();
+                        }).show();
+            } else {
+                String action = "running".equals(state) ? "pause_study_timer" : "resume_study_timer";
+                JSONObject result = StudyTimer.handleCommand(this, studyAction(action));
+                if (!result.optBoolean("ok")) Toast.makeText(this, result.optString("result"), Toast.LENGTH_SHORT).show();
+                updateStudyTimerPanel();
+            }
+        });
+        panel.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+            JSONObject result = StudyTimer.handleCommand(this, studyAction("stop_study_timer"));
+            Toast.makeText(this, result.optBoolean("ok") ? "学习记录已保存" : result.optString("result"), Toast.LENGTH_SHORT).show();
+            updateStudyTimerPanel();
+        });
+        uiHandler.removeCallbacks(studyTimerTick);
+        studyTimerTick.run();
+    }
+
+    private void updateStudyTimerPanel() {
+        if (studyTimerDialog == null || !studyTimerDialog.isShowing()) return;
+        JSONObject state = StudyTimer.snapshot(this);
+        String status = state.optString("status", "idle");
+        long seconds = state.optLong("elapsed_ms", 0L) / 1000L;
+        StringBuilder info = new StringBuilder("当前科目：")
+                .append(state.optString("subject", "").isEmpty() ? "暂无" : state.optString("subject"))
+                .append("\n当前状态：").append("running".equals(status) ? "计时中" : "paused".equals(status) ? "已暂停" : "未开始")
+                .append("\n本次累计：").append(String.format(Locale.CHINA, "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
+                .append("\n今日累计：").append(state.optLong("today_ms") / 60000L).append(" 分钟");
+        JSONObject subjects = state.optJSONObject("today_subjects_ms");
+        if (subjects != null) {
+            java.util.Iterator<String> names = subjects.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                info.append("\n").append(name).append("：").append(subjects.optLong(name) / 60000L).append(" 分钟");
+            }
+        }
+        info.append("\n\n学习计时独立于全机锁定；退出页面后继续保存计时。连接服务后会同步计时摘要。");
+        studyTimerDialog.setMessage(info.toString());
+        studyTimerDialog.getButton(AlertDialog.BUTTON_POSITIVE).setText("running".equals(status) ? "暂停" : "paused".equals(status) ? "继续" : "开始学习");
+        studyTimerDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(!"idle".equals(status));
+    }
+
+    private JSONObject studyAction(String action) {
+        JSONObject cmd = new JSONObject();
+        try { cmd.put("action", action); } catch (Exception ignored) { }
+        return cmd;
     }
 
     private void showFocusModePanel() {
@@ -2268,8 +2359,8 @@ public class MainActivity extends Activity {
 
     private int dp(float v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    @Override protected void onResume() { super.onResume(); serviceRunning = CompanionService.isRunning(); updateUI(); if (recentlyOpenedAccessibilitySettings()) scheduleAccessibilityFollowupChecks(); uiHandler.removeCallbacks(refreshTick); uiHandler.post(refreshTick); }
-    @Override protected void onPause() { saveConnectionSettingsOnly(true); uiHandler.removeCallbacks(refreshTick); super.onPause(); }
+    @Override protected void onResume() { super.onResume(); serviceRunning = CompanionService.isRunning(); updateUI(); if (recentlyOpenedAccessibilitySettings()) scheduleAccessibilityFollowupChecks(); uiHandler.removeCallbacks(refreshTick); uiHandler.post(refreshTick); uiHandler.removeCallbacks(studyTimerTick); uiHandler.post(studyTimerTick); }
+    @Override protected void onPause() { saveConnectionSettingsOnly(true); uiHandler.removeCallbacks(refreshTick); uiHandler.removeCallbacks(studyTimerTick); super.onPause(); }
     @Override protected void onStop() { saveConnectionSettingsOnly(true); super.onStop(); }
 
     @Override public void onBackPressed() {

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import calendar
+import re
 import json
 import os
 import subprocess
@@ -50,6 +51,8 @@ SENSITIVE_PACKAGES = {"com.eg.android.AlipayGphone", "com.tencent.mm.plugin.wall
 ALLOWED_ACTIONS = {"noop", "peek", "open_app", "home", "back", "recents", "screen_off", "turn_screen_off", "lock_screen", "phone_screen_off", "tap", "swipe", "set_alarm", "send_notification", "run_sequence", "save_known_app", "get_screen_nodes", "tap_text", "input_text", "lock_app", "unlock_app", "temporary_unlock_app", "extend_lock", "deny_unlock_request", "get_lock_state", "set_emergency_passphrase", "add_locked_app", "remove_locked_app", "list_lockable_apps", "screen_break_app", "start_screen_break", "screen_break", "end_screen_break", "stop_screen_break", "temporary_screen_break_release", "temporary_screen_release", "extend_screen_break", "deny_screen_break_release_request", "deny_break_release_request", "get_screen_break_state", "set_screen_break_passphrase", "add_screen_break_app", "remove_screen_break_app", "list_screen_break_apps", "get_focus_status", "start_focus_mode", "end_focus_mode", "set_focus_plan", "reply_focus_request", "approve_focus_unlock", "deny_focus_unlock", "request_focus_unlock", "create_focus_request", "get_guidian_state", "set_guidian_config", "trigger_guidian", "mark_guidian_returned", "get_calendar_state", "upsert_calendar_event", "add_calendar_event", "delete_calendar_event", "create_diary_book", "list_diary_books", "rename_diary_book", "update_diary_book_cover", "write_diary_entry", "list_diary_entries", "read_diary_entry", "read_diary_entry_with_annotations", "add_diary_annotation", "list_diary_annotations", "mark_diary_annotations_seen", "delete_diary_annotation", "search_diary_entries", "update_diary_entry", "delete_diary_entry", "delete_diary_book", "get_wallet_state", "get_wallet_month_state", "list_wallet_months", "add_wallet_record", "list_wallet_pending", "list_wallet_approvals", "list_companion_wallet_requests", "list_wallet_request_results", "submit_wallet_approval", "submit_companion_wallet_request", "decide_wallet_approval", "save_wallet_request_result", "update_wallet_request_result", "save_user_wallet_request_result", "edit_wallet_record", "update_wallet_record", "delete_wallet_record", "remove_wallet_record", "confirm_wallet_record", "get_wallet_rules", "set_wallet_rules", "wallet_approval_request", "get_takeout_state", "list_takeout_cards", "list_takeout_meals", "remember_takeout_meal", "remember_current_takeout_meal", "set_takeout_budget", "set_takeout_preferences", "add_takeout_card", "save_takeout_card", "update_takeout_card", "remove_takeout_card", "delete_takeout_card", "suggest_takeout_options", "create_takeout_plan", "takeout_wallet_request", "open_takeout_link", "open_takeout_plan", "copy_takeout_note", "record_takeout_order", "prepare_takeout_checkout", "auto_takeout_checkout", "get_takeout_checkout_status", "cancel_takeout_checkout"}
 
 
+
+ALLOWED_ACTIONS.update({"get_study_timer_status", "start_study_timer", "pause_study_timer", "resume_study_timer", "stop_study_timer"})
 
 def _nested_url_decode(value: str) -> str:
     s = str(value or "").strip().replace("&amp;", "&")
@@ -524,6 +527,63 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/mcp", "/sse"):
             self._json(400, {"ok": False, "error": "LINJIAN_ERR_WRONG_SERVICE", "message": "你访问的是掌心窗 server 服务，不是 MCP 服务。请单独部署 mcp 目录，并在 MCP 客户端填写 MCP 服务域名 + /mcp 或 /sse。"})
+            return
+        if path == "/api/study_room/reply":
+            # Header only: avoid credentials in query strings and access logs.
+            import hmac
+            supplied = self.headers.get("X-Auth-Token", "")
+            if not self.state.token or not hmac.compare_digest(supplied.encode(), self.state.token.encode()):
+                self._json(403, {"ok": False, "error": ERR_BAD_TOKEN}); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 32768:
+                    self._json(413, {"ok": False, "error": "request_too_large"}); return
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(data, dict): raise ValueError()
+            except (ValueError, UnicodeError):
+                self._json(400, {"ok": False, "error": "invalid_messages"}); return
+            messages = data.get("messages") or []
+            device = data.get("device_id", DEFAULT_DEVICE)
+            if not isinstance(device, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", device):
+                self._json(400, {"ok": False, "error": "bad_device"}); return
+            if (not isinstance(messages, list) or not 1 <= len(messages) <= 8
+                or any(not isinstance(m, dict) or m.get("role") not in ("user", "assistant")
+                       or not isinstance(m.get("content"), str) or not m["content"].strip()
+                       or len(m["content"].encode("utf-16-le")) // 2 > 1000 for m in messages)
+                or messages[-1].get("role") != "user"):
+                self._json(400, {"ok": False, "error": "invalid_messages"}); return
+            upstream = os.environ.get("STUDY_ROOM_FREE_AI_URL", "").strip()
+            upstream_token = os.environ.get("STUDY_ROOM_FREE_AI_TOKEN", "").strip()
+            configured = urlparse(upstream)
+            if (os.environ.get("STUDY_ROOM_FREE_AI_ENABLED") != "true"
+                or configured.scheme != "https" or not configured.hostname or configured.username
+                or configured.password or configured.query or configured.fragment or not upstream_token):
+                self._json(503, {"ok": False, "error": "free_ai_not_configured"}); return
+            try:
+                from urllib.request import Request, build_opener, HTTPRedirectHandler
+                from urllib.error import HTTPError
+                class NoRedirect(HTTPRedirectHandler):
+                    def redirect_request(self, req, fp, code, msg, headers, newurl):
+                        return None
+                payload = json.dumps({"device_id": device,
+                    "subject": str(data.get("subject") or "学习")[:60],
+                    "messages": [{"role": m["role"], "content": m["content"]} for m in messages]}, ensure_ascii=False).encode("utf-8")
+                req = Request(upstream, data=payload, headers={"X-Auth-Token": upstream_token,
+                    "Content-Type": "application/json; charset=utf-8"}, method="POST")
+                with build_opener(NoRedirect()).open(req, timeout=20) as response:
+                    raw = response.read(16385)
+                    if len(raw) > 16384: raise ValueError("response_too_large")
+                    result = json.loads(raw.decode("utf-8"))
+                if isinstance(result, dict) and result.get("ok") is True and isinstance(result.get("reply"), str) and result["reply"].strip():
+                    self._json(200, {"ok": True, "reply": result["reply"].strip()[:600],
+                                     "provider": "free_ai_proxy", "same_chatgpt_conversation": False})
+                else: self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
+            except HTTPError as error:
+                if error.code == 429:
+                    self._json(429, {"ok": False, "error": "free_ai_daily_limit"})
+                else: self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
+            except Exception:
+                self._json(503, {"ok": False, "error": "free_ai_service_unavailable"})
             return
         if path == "/api/companion/whisper":
             if not self._require_token(): return

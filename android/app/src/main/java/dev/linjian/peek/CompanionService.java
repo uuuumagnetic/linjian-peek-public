@@ -198,6 +198,14 @@ public class CompanionService extends Service {
                 try { reportCommand(ctx, serverUrl, token, id, true, result); uploadStateThrottled(serverUrl, token, ctx, false); } catch (Exception ignored) { }
                 return;
             }
+            if (StudyTimer.isStudyAction(action)) {
+                JSONObject rr = StudyTimer.handleCommand(ctx, cmd);
+                boolean ok = rr.optBoolean("ok", false);
+                String result = rr.optString("result", rr.toString());
+                DebugState.append(ctx, "执行学习计时命令 " + action + "：" + result);
+                try { reportCommand(ctx, serverUrl, token, id, ok, result); uploadStateThrottled(serverUrl, token, ctx, true); } catch (Exception ignored) { }
+                return;
+            }
             if (FocusMode.isFocusAction(action)) {
                 Context focusCtx = ScreenshotService.getInstance() != null ? ScreenshotService.getInstance() : ctx;
                 JSONObject rr = FocusMode.handleCommand(focusCtx, cmd);
@@ -312,6 +320,11 @@ public class CompanionService extends Service {
                 JSONObject rr = FocusMode.handleCommand(focusCtx, focusCmd); ok = rr.optBoolean("ok", false); result = rr.optString("result", rr.toString());
                 if (ok && ("start_focus_mode".equals(action) || "enable_focus_mode".equals(action))) FocusMode.forceShowLockActivity(focusCtx);
             } else if (isAppGateAction(action)) { JSONObject rr = AppGate.handleCommand(ctx, new JSONObject().put("action", normalizeGateAction(action)).put("app", app).put("package", pkg)); ok = rr.optBoolean("ok", false); result = rr.optString("result", rr.toString());
+            } else if (StudyTimer.isStudyAction(action)) {
+                JSONObject command = new JSONObject().put("action", action).put("subject", title);
+                JSONObject rr = StudyTimer.handleCommand(ctx, command);
+                ok = rr.optBoolean("ok", false);
+                result = rr.optString("result", rr.toString());
             } else if ("get_screen_nodes".equals(action)) {
                 if (svc != null) { svc.refreshScreenModel(); ok = true; result = svc.getScreenNodesJsonNow(); }
                 else result = "accessibility service not ready";
