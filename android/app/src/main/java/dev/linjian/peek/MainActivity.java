@@ -1113,6 +1113,7 @@ public class MainActivity extends Activity {
         root.addView(label("安心规则", 9), marginBottom(6));
         root.addView(guardSettingBlock("应用门禁", "需要时轻轻守住", R.drawable.ic_shield, drawerAppGate), marginBottom(7));
         root.addView(actionSettingBlock("专注模式", "全机专注、应急放行与留言", R.drawable.ic_shield, this::showFocusModePanel), marginBottom(7));
+        root.addView(actionSettingBlock("学习计时", "独立计时、暂停与每日累计；同步给哥哥", R.drawable.ic_clock, this::showStudyTimerPanel), marginBottom(7));
         root.addView(actionSettingBlock("小金库", "预算、记账与花钱审批", R.drawable.ic_wallet, () -> startActivity(new Intent(this, WalletActivity.class))), marginBottom(7));
         root.addView(actionSettingBlock("今天吃什么", "常点外卖、预算与小金库联动", R.drawable.ic_wallet, () -> startActivity(new Intent(this, TakeoutActivity.class))), marginBottom(7));
         root.addView(guardSettingBlock("主动提醒", "电量、休息与喝水", R.drawable.ic_clock, drawerReminder), marginBottom(7));
@@ -1139,6 +1140,64 @@ public class MainActivity extends Activity {
         ending.addView(endingCopy, weightedWrap(1f, 10));
         root.addView(ending);
         return root;
+    }
+
+    private void showStudyTimerPanel() {
+        try {
+            JSONObject s = StudyTimer.snapshot(this);
+            String status = s.optString("status", "idle");
+            long elapsed = s.optLong("elapsed_ms", 0L) / 60000L;
+            long today = s.optLong("today_ms", 0L) / 60000L;
+            String info = "当前科目：" + (s.optString("subject", "").isEmpty() ? "暂无" : s.optString("subject"))
+                    + "\n当前状态：" + ("running".equals(status) ? "计时中" : "paused".equals(status) ? "已暂停" : "未开始")
+                    + "\n本次累计：" + elapsed + " 分钟"
+                    + "\n今日累计：" + today + " 分钟"
+                    + "\n\n学习计时独立于全机锁定；状态会通过掌心窗同步给哥哥。";
+            AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                    .setTitle("学习计时")
+                    .setMessage(info)
+                    .setNegativeButton("关闭", null);
+            if ("idle".equals(status)) {
+                builder.setPositiveButton("开始学习", (dialog, which) -> {
+                    EditText subjectInput = new EditText(this);
+                    subjectInput.setSingleLine(true);
+                    subjectInput.setText(s.optString("subject", "刑法").isEmpty() ? "刑法" : s.optString("subject"));
+                    subjectInput.setSelectAllOnFocus(true);
+                    new AlertDialog.Builder(this)
+                            .setTitle("这次学习什么？")
+                            .setView(subjectInput)
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("开始计时", (d, w) -> {
+                                try {
+                                    JSONObject cmd = new JSONObject().put("action", "start_study_timer")
+                                            .put("subject", subjectInput.getText().toString());
+                                    JSONObject r = StudyTimer.handleCommand(this, cmd);
+                                    Toast.makeText(this, r.optBoolean("ok") ? "开始学习计时" : r.optString("result"), Toast.LENGTH_SHORT).show();
+                                    updateUI();
+                                } catch (Exception e) { Toast.makeText(this, "计时失败", Toast.LENGTH_SHORT).show(); }
+                            }).show();
+                });
+            } else {
+                builder.setPositiveButton("running".equals(status) ? "暂停" : "继续", (dialog, which) -> {
+                    String action = "running".equals(status) ? "pause_study_timer" : "resume_study_timer";
+                    JSONObject r = StudyTimer.handleCommand(this, studyAction(action));
+                    Toast.makeText(this, r.optString("result"), Toast.LENGTH_SHORT).show();
+                    updateUI();
+                });
+                builder.setNeutralButton("结束并保存", (dialog, which) -> {
+                    JSONObject r = StudyTimer.handleCommand(this, studyAction("stop_study_timer"));
+                    Toast.makeText(this, r.optBoolean("ok") ? "学习记录已保存" : r.optString("result"), Toast.LENGTH_SHORT).show();
+                    updateUI();
+                });
+            }
+            builder.show();
+        } catch (Exception e) { Toast.makeText(this, "计时读取失败", Toast.LENGTH_SHORT).show(); }
+    }
+
+    private JSONObject studyAction(String action) {
+        JSONObject cmd = new JSONObject();
+        try { cmd.put("action", action); } catch (Exception ignored) { }
+        return cmd;
     }
 
     private void showFocusModePanel() {
